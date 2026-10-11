@@ -22,6 +22,127 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
 
+      - name: Prepare Agoré Android branding assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ICON_DIR="app/src/main/res/mipmap-nodpi"
+          SOUND_DIR="app/src/main/res/raw"
+
+          mkdir -p "$ICON_DIR" "$SOUND_DIR"
+
+          ICON_URL="https://raw.githubusercontent.com/JJTGG/Agore/9ef49c093de18e3a62969926c78e8c6e2e5f6f62/public/agore-icon-512.png"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --retry 3 \
+            "$ICON_URL" \
+            --output "$ICON_DIR/ic_launcher.png"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import math
+          import struct
+          import wave
+
+          icon = Path(
+              "app/src/main/res/mipmap-nodpi/ic_launcher.png"
+          )
+          data = icon.read_bytes()
+
+          if data[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit("Launcher icon is not a valid PNG.")
+
+          width, height = struct.unpack(">II", data[16:24])
+
+          if (width, height) != (512, 512):
+              raise SystemExit(
+                  f"Expected 512x512 icon, received {width}x{height}."
+              )
+
+          print(f"Verified official icon: {width}x{height}")
+
+          # Generate an original, short three-note Agoré sound.
+          # The PCM WAV is created during the build, not uploaded
+          # manually or downloaded from another app.
+          output = Path(
+              "app/src/main/res/raw/agore_notification.wav"
+          )
+
+          sample_rate = 44100
+          sample_width = 2
+          amplitude = 0.48
+
+          notes = [
+              (587.33, 0.18),
+              (739.99, 0.18),
+              (880.00, 0.23),
+          ]
+
+          gap_seconds = 0.025
+          samples = []
+
+          for frequency, duration in notes:
+              count = int(sample_rate * duration)
+              attack = max(1, int(sample_rate * 0.012))
+              release = max(1, int(sample_rate * 0.045))
+
+              for i in range(count):
+                  envelope = min(
+                      1.0,
+                      i / attack,
+                      (count - 1 - i) / release,
+                  )
+                  envelope = max(0.0, envelope)
+
+                  t = i / sample_rate
+
+                  tone = (
+                      math.sin(2 * math.pi * frequency * t)
+                      + 0.16 * math.sin(
+                          4 * math.pi * frequency * t
+                      )
+                  )
+
+                  value = int(
+                      32767 * amplitude * envelope * tone
+                  )
+
+                  value = max(-32768, min(32767, value))
+                  samples.append(struct.pack("<h", value))
+
+              silence_count = int(sample_rate * gap_seconds)
+              samples.extend(
+                  [b"\x00\x00"] * silence_count
+              )
+
+          with wave.open(str(output), "wb") as sound:
+              sound.setnchannels(1)
+              sound.setsampwidth(sample_width)
+              sound.setframerate(sample_rate)
+              sound.writeframes(b"".join(samples))
+
+          with wave.open(str(output), "rb") as sound:
+              if (
+                  sound.getnchannels() != 1
+                  or sound.getsampwidth() != 2
+                  or sound.getframerate() != sample_rate
+                  or sound.getnframes() == 0
+              ):
+                  raise SystemExit(
+                      "Generated notification sound failed validation."
+                  )
+
+          print(
+              "Verified Agoré notification sound: "
+              f"{output}, {output.stat().st_size} bytes"
+          )
+          PY
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
