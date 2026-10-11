@@ -1,7 +1,5 @@
 
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-
     <style
         name="Theme.Agore"
         parent="@android:style/Theme.Material.NoActionBar">
@@ -16,7 +14,5 @@
 
         <item name="android:windowBackground">#101522</item>
         <item name="android:windowActionModeOverlay">true</item>
-
     </style>
-
 </resources>
