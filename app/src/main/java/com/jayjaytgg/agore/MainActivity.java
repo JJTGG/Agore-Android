@@ -26,13 +26,24 @@ import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
 public class MainActivity extends Activity {
 
     private static final String HOME_URL =
             "https://agore.vercel.app/home";
 
+    private static final String AUTH_URL =
+            "https://agore.vercel.app/auth";
+
     private static final String AGORE_HOST =
             "agore.vercel.app";
+
+    private static final String OAUTH_CALLBACK_SCHEME =
+            "com.jayjaytgg.agore";
+
+    private static final String OAUTH_CALLBACK_HOST =
+            "auth-callback";
 
     private static final String NOTIFICATION_CHANNEL_ID =
             "agore_updates";
@@ -42,6 +53,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private ProgressBar progressBar;
     private ValueCallback<Uri[]> fileChooserCallback;
+    private Uri pendingOAuthCallback;
     private int lastNightMode;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -52,6 +64,8 @@ public class MainActivity extends Activity {
         lastNightMode =
                 getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK;
+
+        pendingOAuthCallback = extractOAuthCallback(getIntent());
 
         createNotificationChannel();
 
@@ -74,18 +88,16 @@ public class MainActivity extends Activity {
         );
 
         if (Build.VERSION.SDK_INT >= 35) {
-            root.setOnApplyWindowInsetsListener(
-                    (view, insets) -> {
-                        view.setPadding(
-                                insets.getSystemWindowInsetLeft(),
-                                insets.getSystemWindowInsetTop(),
-                                insets.getSystemWindowInsetRight(),
-                                insets.getSystemWindowInsetBottom()
-                        );
+            root.setOnApplyWindowInsetsListener((view, insets) -> {
+                view.setPadding(
+                        insets.getSystemWindowInsetLeft(),
+                        insets.getSystemWindowInsetTop(),
+                        insets.getSystemWindowInsetRight(),
+                        insets.getSystemWindowInsetBottom()
+                );
 
-                        return insets.consumeSystemWindowInsets();
-                    }
-            );
+                return insets.consumeSystemWindowInsets();
+            });
         }
 
         webView = new WebView(this);
@@ -108,6 +120,10 @@ public class MainActivity extends Activity {
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
+
+        settings.setUserAgentString(
+                settings.getUserAgentString() + " AgoreAndroid"
+        );
 
         if (Build.VERSION.SDK_INT >= 26) {
             settings.setSafeBrowsingEnabled(true);
@@ -148,6 +164,11 @@ public class MainActivity extends Activity {
             ) {
                 progressBar.setProgress(100);
                 progressBar.setVisibility(View.GONE);
+
+                if (pendingOAuthCallback != null
+                        && isAuthUrl(url)) {
+                    deliverPendingOAuthCallback();
+                }
             }
 
             @Override
@@ -256,7 +277,9 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
-        if (savedInstanceState != null) {
+        if (pendingOAuthCallback != null) {
+            webView.loadUrl(AUTH_URL);
+        } else if (savedInstanceState != null) {
             android.webkit.WebBackForwardList restored =
                     webView.restoreState(savedInstanceState);
 
@@ -265,6 +288,88 @@ public class MainActivity extends Activity {
             }
         } else {
             webView.loadUrl(HOME_URL);
+        }
+    }
+
+    private Uri extractOAuthCallback(Intent intent) {
+        if (intent == null
+                || !Intent.ACTION_VIEW.equals(intent.getAction())) {
+            return null;
+        }
+
+        Uri uri = intent.getData();
+
+        if (uri == null
+                || !OAUTH_CALLBACK_SCHEME.equals(uri.getScheme())
+                || !OAUTH_CALLBACK_HOST.equals(uri.getHost())) {
+            return null;
+        }
+
+        boolean hasCode = uri.getQueryParameter("code") != null;
+        boolean hasError = uri.getQueryParameter("error") != null
+                || uri.getQueryParameter("error_description") != null;
+
+        return hasCode || hasError ? uri : null;
+    }
+
+    private boolean isAuthUrl(String value) {
+        if (value == null) {
+            return false;
+        }
+
+        Uri uri = Uri.parse(value);
+
+        return "https".equalsIgnoreCase(uri.getScheme())
+                && AGORE_HOST.equalsIgnoreCase(uri.getHost())
+                && "/auth".equals(uri.getPath());
+    }
+
+    private void deliverPendingOAuthCallback() {
+        if (webView == null || pendingOAuthCallback == null) {
+            return;
+        }
+
+        String callbackJson =
+                JSONObject.quote(pendingOAuthCallback.toString());
+
+        pendingOAuthCallback = null;
+
+        String script =
+                "(function(){"
+                + "var callbackUrl=" + callbackJson + ";"
+                + "window.__AGORE_NATIVE_OAUTH_CALLBACK=callbackUrl;"
+                + "window.dispatchEvent(new CustomEvent("
+                + "'agore-native-oauth-callback',"
+                + "{detail:callbackUrl}));"
+                + "})();";
+
+        webView.evaluateJavascript(script, null);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+
+        setIntent(intent);
+
+        Uri callback = extractOAuthCallback(intent);
+
+        if (callback == null) {
+            return;
+        }
+
+        pendingOAuthCallback = callback;
+
+        if (webView == null) {
+            return;
+        }
+
+        String currentUrl = webView.getUrl();
+
+        if (!isAuthUrl(currentUrl)) {
+            webView.loadUrl(AUTH_URL);
+        } else {
+            deliverPendingOAuthCallback();
         }
     }
 
@@ -295,9 +400,7 @@ public class MainActivity extends Activity {
 
         AudioAttributes audioAttributes =
                 new AudioAttributes.Builder()
-                        .setUsage(
-                                AudioAttributes.USAGE_NOTIFICATION
-                        )
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                         .setContentType(
                                 AudioAttributes.CONTENT_TYPE_SONIFICATION
                         )
@@ -319,9 +422,7 @@ public class MainActivity extends Activity {
         channel.setVibrationPattern(
                 new long[]{0, 120, 60, 160}
         );
-        channel.setLightColor(
-                Color.parseColor("#2458C6")
-        );
+        channel.setLightColor(Color.parseColor("#2458C6"));
         channel.setShowBadge(true);
 
         notificationManager.createNotificationChannel(channel);
@@ -368,14 +469,9 @@ public class MainActivity extends Activity {
 
     private void openExternalUrl(Uri uri) {
         try {
-            Intent intent = new Intent(
-                    Intent.ACTION_VIEW,
-                    uri
-            );
+            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
 
-            if (intent.resolveActivity(
-                    getPackageManager()
-            ) != null) {
+            if (intent.resolveActivity(getPackageManager()) != null) {
                 startActivity(intent);
             } else {
                 Toast.makeText(
@@ -400,11 +496,7 @@ public class MainActivity extends Activity {
             int resultCode,
             Intent data
     ) {
-        super.onActivityResult(
-                requestCode,
-                resultCode,
-                data
-        );
+        super.onActivityResult(requestCode, resultCode, data);
 
         if (requestCode == FILE_CHOOSER_REQUEST_CODE
                 && fileChooserCallback != null) {
@@ -421,9 +513,7 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onConfigurationChanged(
-            Configuration newConfig
-    ) {
+    public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
 
         int newNightMode =
@@ -492,8 +582,7 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return Math.round(
-                value * getResources()
-                        .getDisplayMetrics().density
+                value * getResources().getDisplayMetrics().density
         );
     }
 }
