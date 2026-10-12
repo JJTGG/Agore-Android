@@ -15,6 +15,7 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
+import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -54,7 +55,11 @@ public class MainActivity extends Activity {
     private ProgressBar progressBar;
     private ValueCallback<Uri[]> fileChooserCallback;
     private Uri pendingOAuthCallback;
+
     private int lastNightMode;
+
+    private boolean javascriptErrorToastShown;
+    private boolean diagnosticsReadyToastShown;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -153,6 +158,7 @@ public class MainActivity extends Activity {
                     String url,
                     android.graphics.Bitmap favicon
             ) {
+                javascriptErrorToastShown = false;
                 progressBar.setVisibility(View.VISIBLE);
                 progressBar.setProgress(0);
             }
@@ -164,6 +170,8 @@ public class MainActivity extends Activity {
             ) {
                 progressBar.setProgress(100);
                 progressBar.setVisibility(View.GONE);
+
+                installDiagnostics(view);
 
                 if (pendingOAuthCallback != null
                         && isAuthUrl(url)) {
@@ -191,6 +199,43 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient() {
 
             @Override
+            public boolean onConsoleMessage(ConsoleMessage message) {
+                String text = message.message();
+
+                if (text == null) {
+                    text = "Unknown WebView console message.";
+                }
+
+                if (text.startsWith("AGORE_TAP:")) {
+                    showDiagnosticToast(
+                            "Tap detected: "
+                                    + text.substring(
+                                            "AGORE_TAP:".length()
+                                    ),
+                            Toast.LENGTH_SHORT
+                    );
+
+                } else if (
+                        message.messageLevel()
+                                == ConsoleMessage.MessageLevel.ERROR
+                        && !javascriptErrorToastShown
+                ) {
+                    javascriptErrorToastShown = true;
+
+                    if (text.length() > 145) {
+                        text = text.substring(0, 145) + "...";
+                    }
+
+                    showDiagnosticToast(
+                            "Agoré JavaScript error: " + text,
+                            Toast.LENGTH_LONG
+                    );
+                }
+
+                return true;
+            }
+
+            @Override
             public void onProgressChanged(
                     WebView view,
                     int newProgress
@@ -206,7 +251,7 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean onShowFileChooser(
-                    WebView webView,
+                    WebView view,
                     ValueCallback<Uri[]> callback,
                     FileChooserParams params
             ) {
@@ -233,11 +278,10 @@ public class MainActivity extends Activity {
                     fileChooserCallback = null;
                     callback.onReceiveValue(null);
 
-                    Toast.makeText(
-                            MainActivity.this,
+                    showDiagnosticToast(
                             "Unable to open file picker.",
                             Toast.LENGTH_SHORT
-                    ).show();
+                    );
 
                     return true;
                 }
@@ -279,6 +323,7 @@ public class MainActivity extends Activity {
 
         if (pendingOAuthCallback != null) {
             webView.loadUrl(AUTH_URL);
+
         } else if (savedInstanceState != null) {
             android.webkit.WebBackForwardList restored =
                     webView.restoreState(savedInstanceState);
@@ -286,9 +331,75 @@ public class MainActivity extends Activity {
             if (restored == null || restored.getSize() == 0) {
                 webView.loadUrl(HOME_URL);
             }
+
         } else {
             webView.loadUrl(HOME_URL);
         }
+    }
+
+    private void installDiagnostics(WebView view) {
+        String script =
+                "(function(){"
+                + "if(!window.__agoreGlobalErrorProbe){"
+                + "window.__agoreGlobalErrorProbe=true;"
+                + "window.addEventListener('error',function(e){"
+                + "var m=e&&e.message?e.message:'Unknown window error';"
+                + "console.error('AGORE_WINDOW_ERROR:'+m);"
+                + "});"
+                + "window.addEventListener('unhandledrejection',"
+                + "function(e){"
+                + "var r=e?e.reason:null;"
+                + "var m=r&&r.message?r.message:String(r||'Unknown rejection');"
+                + "console.error('AGORE_UNHANDLED_REJECTION:'+m);"
+                + "});"
+                + "}"
+                + "if(!window.__agoreTapProbeInstalled){"
+                + "window.__agoreTapProbeInstalled=true;"
+                + "document.addEventListener('click',function(e){"
+                + "var t=e.target;"
+                + "var el=t&&t.closest?"
+                + "t.closest('button,a,[role=button],summary,[onclick]'):null;"
+                + "if(!el)return;"
+                + "var label=el.innerText"
+                + "||el.getAttribute('aria-label')"
+                + "||el.getAttribute('title')"
+                + "||el.getAttribute('type')"
+                + "||el.tagName;"
+                + "label=String(label)"
+                + ".replace(/\\s+/g,' ').trim().slice(0,60);"
+                + "console.log('AGORE_TAP:'+label);"
+                + "},true);"
+                + "}"
+                + "return 'ready';"
+                + "})()";
+
+        view.evaluateJavascript(
+                script,
+                value -> {
+                    if (!diagnosticsReadyToastShown
+                            && value != null
+                            && value.contains("ready")) {
+
+                        diagnosticsReadyToastShown = true;
+
+                        showDiagnosticToast(
+                                "Agoré diagnostics active.",
+                                Toast.LENGTH_SHORT
+                        );
+                    }
+                }
+        );
+    }
+
+    private void showDiagnosticToast(
+            String message,
+            int duration
+    ) {
+        Toast.makeText(
+                MainActivity.this,
+                message,
+                duration
+        ).show();
     }
 
     private Uri extractOAuthCallback(Intent intent) {
@@ -305,8 +416,11 @@ public class MainActivity extends Activity {
             return null;
         }
 
-        boolean hasCode = uri.getQueryParameter("code") != null;
-        boolean hasError = uri.getQueryParameter("error") != null
+        boolean hasCode =
+                uri.getQueryParameter("code") != null;
+
+        boolean hasError =
+                uri.getQueryParameter("error") != null
                 || uri.getQueryParameter("error_description") != null;
 
         return hasCode || hasError ? uri : null;
@@ -470,23 +584,21 @@ public class MainActivity extends Activity {
     private void openExternalUrl(Uri uri) {
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+            intent.addCategory(Intent.CATEGORY_BROWSABLE);
 
-            if (intent.resolveActivity(getPackageManager()) != null) {
-                startActivity(intent);
-            } else {
-                Toast.makeText(
-                        this,
-                        "No app is available to open this link.",
-                        Toast.LENGTH_SHORT
-                ).show();
-            }
+            // Start the handler directly. resolveActivity() can return
+            // null on Android versions with restricted package visibility.
+            startActivity(intent);
 
-        } catch (ActivityNotFoundException error) {
-            Toast.makeText(
-                    this,
-                    "Unable to open this link.",
+        } catch (
+                ActivityNotFoundException
+                | SecurityException error
+        ) {
+            showDiagnosticToast(
+                    "Unable to open this link: "
+                            + uri.getScheme(),
                     Toast.LENGTH_SHORT
-            ).show();
+            );
         }
     }
 
