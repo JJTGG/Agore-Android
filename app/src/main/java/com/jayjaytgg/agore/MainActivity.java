@@ -2,16 +2,19 @@ package com.jayjaytgg.agore;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.media.AudioAttributes;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
-import android.webkit.ConsoleMessage;
+import android.view.Window;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -31,13 +34,15 @@ public class MainActivity extends Activity {
     private static final String AGORE_HOST =
             "agore.vercel.app";
 
+    private static final String NOTIFICATION_CHANNEL_ID =
+            "agore_updates";
+
     private static final int FILE_CHOOSER_REQUEST_CODE = 1001;
 
     private WebView webView;
     private ProgressBar progressBar;
     private ValueCallback<Uri[]> fileChooserCallback;
     private int lastNightMode;
-    private boolean javascriptErrorToastShown;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -48,12 +53,16 @@ public class MainActivity extends Activity {
                 getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK;
 
-        getWindow().setStatusBarColor(Color.TRANSPARENT);
-        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        createNotificationChannel();
+
+        Window window = getWindow();
+
+        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setNavigationBarColor(Color.TRANSPARENT);
 
         if (Build.VERSION.SDK_INT >= 29) {
-            getWindow().setStatusBarContrastEnforced(false);
-            getWindow().setNavigationBarContrastEnforced(false);
+            window.setStatusBarContrastEnforced(false);
+            window.setNavigationBarContrastEnforced(false);
         }
 
         FrameLayout root = new FrameLayout(this);
@@ -65,16 +74,18 @@ public class MainActivity extends Activity {
         );
 
         if (Build.VERSION.SDK_INT >= 35) {
-            root.setOnApplyWindowInsetsListener((view, insets) -> {
-                view.setPadding(
-                        insets.getSystemWindowInsetLeft(),
-                        insets.getSystemWindowInsetTop(),
-                        insets.getSystemWindowInsetRight(),
-                        insets.getSystemWindowInsetBottom()
-                );
+            root.setOnApplyWindowInsetsListener(
+                    (view, insets) -> {
+                        view.setPadding(
+                                insets.getSystemWindowInsetLeft(),
+                                insets.getSystemWindowInsetTop(),
+                                insets.getSystemWindowInsetRight(),
+                                insets.getSystemWindowInsetBottom()
+                        );
 
-                return insets.consumeSystemWindowInsets();
-            });
+                        return insets.consumeSystemWindowInsets();
+                    }
+            );
         }
 
         webView = new WebView(this);
@@ -126,51 +137,17 @@ public class MainActivity extends Activity {
                     String url,
                     android.graphics.Bitmap favicon
             ) {
-                javascriptErrorToastShown = false;
                 progressBar.setVisibility(View.VISIBLE);
                 progressBar.setProgress(0);
             }
 
             @Override
-            public void onPageFinished(WebView view, String url) {
+            public void onPageFinished(
+                    WebView view,
+                    String url
+            ) {
                 progressBar.setProgress(100);
                 progressBar.setVisibility(View.GONE);
-
-                String diagnosticScript =
-                        "(function(){"
-                        + "if(window.__agoreTapProbeInstalled)"
-                        + "return 'ready';"
-                        + "window.__agoreTapProbeInstalled=true;"
-                        + "document.addEventListener('click',function(e){"
-                        + "var t=e.target;"
-                        + "var el=t&&t.closest?"
-                        + "t.closest('button,a,[role=button],input,"
-                        + "summary,[onclick],[tabindex]'):null;"
-                        + "if(!el)return;"
-                        + "var label=el.innerText"
-                        + "||el.getAttribute('aria-label')"
-                        + "||el.getAttribute('title')"
-                        + "||el.getAttribute('type')"
-                        + "||el.tagName;"
-                        + "label=String(label)"
-                        + ".replace(/\\s+/g,' ').trim().slice(0,45);"
-                        + "console.log('AGORE_TAP:'+label);"
-                        + "},true);"
-                        + "return 'ready';"
-                        + "})()";
-
-                view.evaluateJavascript(
-                        diagnosticScript,
-                        value -> {
-                            if (value != null && value.contains("ready")) {
-                                Toast.makeText(
-                                        MainActivity.this,
-                                        "Agoré tap diagnostics active.",
-                                        Toast.LENGTH_SHORT
-                                ).show();
-                            }
-                        }
-                );
             }
 
             @Override
@@ -182,7 +159,8 @@ public class MainActivity extends Activity {
                 if (request.isForMainFrame()) {
                     Toast.makeText(
                             MainActivity.this,
-                            "Unable to connect to Agoré. Check your connection.",
+                            "Unable to connect to Agoré. "
+                                    + "Check your connection.",
                             Toast.LENGTH_LONG
                     ).show();
                 }
@@ -190,43 +168,6 @@ public class MainActivity extends Activity {
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
-
-            @Override
-            public boolean onConsoleMessage(ConsoleMessage message) {
-                String text = message.message();
-
-                if (text != null && text.startsWith("AGORE_TAP:")) {
-                    Toast.makeText(
-                            MainActivity.this,
-                            "Tap detected: "
-                                    + text.substring("AGORE_TAP:".length()),
-                            Toast.LENGTH_SHORT
-                    ).show();
-
-                } else if (
-                        message.messageLevel()
-                                == ConsoleMessage.MessageLevel.ERROR
-                        && !javascriptErrorToastShown
-                ) {
-                    javascriptErrorToastShown = true;
-
-                    if (text == null || text.isEmpty()) {
-                        text = "Unknown JavaScript error";
-                    }
-
-                    if (text.length() > 110) {
-                        text = text.substring(0, 110) + "...";
-                    }
-
-                    Toast.makeText(
-                            MainActivity.this,
-                            "Agoré JavaScript error: " + text,
-                            Toast.LENGTH_LONG
-                    ).show();
-                }
-
-                return true;
-            }
 
             @Override
             public void onProgressChanged(
@@ -255,8 +196,10 @@ public class MainActivity extends Activity {
                 fileChooserCallback = callback;
 
                 try {
+                    Intent intent = params.createIntent();
+
                     startActivityForResult(
-                            params.createIntent(),
+                            intent,
                             FILE_CHOOSER_REQUEST_CODE
                     );
 
@@ -325,6 +268,65 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return;
+        }
+
+        NotificationManager notificationManager =
+                getSystemService(NotificationManager.class);
+
+        if (notificationManager == null) {
+            return;
+        }
+
+        if (notificationManager.getNotificationChannel(
+                NOTIFICATION_CHANNEL_ID
+        ) != null) {
+            return;
+        }
+
+        Uri soundUri = Uri.parse(
+                "android.resource://"
+                        + getPackageName()
+                        + "/"
+                        + R.raw.agore_notification
+        );
+
+        AudioAttributes audioAttributes =
+                new AudioAttributes.Builder()
+                        .setUsage(
+                                AudioAttributes.USAGE_NOTIFICATION
+                        )
+                        .setContentType(
+                                AudioAttributes.CONTENT_TYPE_SONIFICATION
+                        )
+                        .build();
+
+        NotificationChannel channel =
+                new NotificationChannel(
+                        NOTIFICATION_CHANNEL_ID,
+                        "Agoré updates",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                );
+
+        channel.setDescription(
+                "Notifications for Agoré messages and social activity."
+        );
+
+        channel.setSound(soundUri, audioAttributes);
+        channel.enableVibration(true);
+        channel.setVibrationPattern(
+                new long[]{0, 120, 60, 160}
+        );
+        channel.setLightColor(
+                Color.parseColor("#2458C6")
+        );
+        channel.setShowBadge(true);
+
+        notificationManager.createNotificationChannel(channel);
+    }
+
     private boolean isNightMode() {
         int mode =
                 getResources().getConfiguration().uiMode
@@ -356,6 +358,7 @@ public class MainActivity extends Activity {
                 || "mailto".equalsIgnoreCase(scheme)
                 || "tel".equalsIgnoreCase(scheme)
                 || "sms".equalsIgnoreCase(scheme)) {
+
             openExternalUrl(uri);
             return true;
         }
@@ -365,9 +368,14 @@ public class MainActivity extends Activity {
 
     private void openExternalUrl(Uri uri) {
         try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+            Intent intent = new Intent(
+                    Intent.ACTION_VIEW,
+                    uri
+            );
 
-            if (intent.resolveActivity(getPackageManager()) != null) {
+            if (intent.resolveActivity(
+                    getPackageManager()
+            ) != null) {
                 startActivity(intent);
             } else {
                 Toast.makeText(
@@ -392,10 +400,15 @@ public class MainActivity extends Activity {
             int resultCode,
             Intent data
     ) {
-        super.onActivityResult(requestCode, resultCode, data);
+        super.onActivityResult(
+                requestCode,
+                resultCode,
+                data
+        );
 
         if (requestCode == FILE_CHOOSER_REQUEST_CODE
                 && fileChooserCallback != null) {
+
             Uri[] results =
                     resultCode == RESULT_OK
                             ? WebChromeClient.FileChooserParams
@@ -408,7 +421,9 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onConfigurationChanged(Configuration newConfig) {
+    public void onConfigurationChanged(
+            Configuration newConfig
+    ) {
         super.onConfigurationChanged(newConfig);
 
         int newNightMode =
@@ -477,7 +492,8 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return Math.round(
-                value * getResources().getDisplayMetrics().density
+                value * getResources()
+                        .getDisplayMetrics().density
         );
     }
 }
