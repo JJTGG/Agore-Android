@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "451136998211",
+    "project_id": "agore-android",
+    "storage_bucket": "agore-android.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:451136998211:android:7d9ef0d3ad9fbb658bfdf6",
+        "android_client_info": {
+          "package_name": "com.jayjaytgg.agore"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC4r68g99zrkESlJRfYFwHX7Kgw-qq5ddI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
