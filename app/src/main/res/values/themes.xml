@@ -14,5 +14,9 @@
 
         <item name="android:windowBackground">#F6F8FC</item>
         <item name="android:windowActionModeOverlay">true</item>
+
+        <item name="android:windowSplashScreenBackground">#F6F8FC</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
     </style>
 </resources>
