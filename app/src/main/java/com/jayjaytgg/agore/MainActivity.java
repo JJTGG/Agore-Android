@@ -9,6 +9,9 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.media.AudioAttributes;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -55,7 +58,13 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileChooserCallback;
     private Uri pendingOAuthCallback;
 
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback connectivityCallback;
+
+    private String failedMainFrameUrl;
+
     private int lastNightMode;
+    private boolean hasValidatedInternet;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -154,6 +163,16 @@ public class MainActivity extends Activity {
                     String url,
                     android.graphics.Bitmap favicon
             ) {
+                /*
+                 * If the user navigates to another page, discard the
+                 * previous failed URL. Recovery must not unexpectedly
+                 * take the user back to an old page.
+                 */
+                if (failedMainFrameUrl != null
+                        && !failedMainFrameUrl.equals(url)) {
+                    failedMainFrameUrl = null;
+                }
+
                 progressBar.setVisibility(View.VISIBLE);
                 progressBar.setProgress(0);
             }
@@ -178,14 +197,22 @@ public class MainActivity extends Activity {
                     WebResourceRequest request,
                     android.webkit.WebResourceError error
             ) {
-                if (request.isForMainFrame()) {
-                    Toast.makeText(
-                            MainActivity.this,
-                            "Unable to connect to Agoré. "
-                                    + "Check your connection.",
-                            Toast.LENGTH_LONG
-                    ).show();
+                if (!request.isForMainFrame()) {
+                    return;
                 }
+
+                String failedUrl = request.getUrl().toString();
+
+                if (isAgoreUrl(failedUrl)) {
+                    failedMainFrameUrl = failedUrl;
+                }
+
+                Toast.makeText(
+                        MainActivity.this,
+                        "Unable to load Agoré. "
+                                + "Check your connection.",
+                        Toast.LENGTH_LONG
+                ).show();
             }
         });
 
@@ -292,6 +319,194 @@ public class MainActivity extends Activity {
         } else {
             webView.loadUrl(HOME_URL);
         }
+    }
+
+    /*
+     * Register only while the activity is visible. On returning to
+     * Agoré, the initial connectivity check can retry a failed page
+     * if internet access has been restored.
+     */
+    @Override
+    protected void onStart() {
+        super.onStart();
+        registerConnectivityCallback();
+    }
+
+    @Override
+    protected void onStop() {
+        unregisterConnectivityCallback();
+        super.onStop();
+    }
+
+    private void registerConnectivityCallback() {
+        if (connectivityManager == null) {
+            connectivityManager =
+                    getSystemService(ConnectivityManager.class);
+        }
+
+        if (connectivityManager == null
+                || connectivityCallback != null) {
+            return;
+        }
+
+        hasValidatedInternet = false;
+
+        connectivityCallback =
+                new ConnectivityManager.NetworkCallback() {
+
+            @Override
+            public void onAvailable(Network network) {
+                runOnUiThread(() ->
+                        updateConnectivityState(
+                                hasValidatedInternet(network)
+                        )
+                );
+            }
+
+            @Override
+            public void onCapabilitiesChanged(
+                    Network network,
+                    NetworkCapabilities capabilities
+            ) {
+                boolean validated =
+                        hasValidatedInternet(capabilities);
+
+                runOnUiThread(() ->
+                        updateConnectivityState(validated)
+                );
+            }
+
+            @Override
+            public void onLost(Network network) {
+                runOnUiThread(() -> {
+                    if (connectivityManager == null) {
+                        updateConnectivityState(false);
+                        return;
+                    }
+
+                    Network activeNetwork =
+                            connectivityManager.getActiveNetwork();
+
+                    updateConnectivityState(
+                            hasValidatedInternet(activeNetwork)
+                    );
+                });
+            }
+        };
+
+        try {
+            connectivityManager.registerDefaultNetworkCallback(
+                    connectivityCallback
+            );
+
+        } catch (RuntimeException error) {
+            connectivityCallback = null;
+            return;
+        }
+
+        Network activeNetwork =
+                connectivityManager.getActiveNetwork();
+
+        updateConnectivityState(
+                hasValidatedInternet(activeNetwork)
+        );
+    }
+
+    private void unregisterConnectivityCallback() {
+        if (connectivityManager != null
+                && connectivityCallback != null) {
+
+            try {
+                connectivityManager.unregisterNetworkCallback(
+                        connectivityCallback
+                );
+
+            } catch (RuntimeException ignored) {
+                // The callback may already have been unregistered.
+            }
+        }
+
+        connectivityCallback = null;
+        hasValidatedInternet = false;
+    }
+
+    private boolean hasValidatedInternet(Network network) {
+        if (connectivityManager == null || network == null) {
+            return false;
+        }
+
+        NetworkCapabilities capabilities =
+                connectivityManager.getNetworkCapabilities(network);
+
+        return hasValidatedInternet(capabilities);
+    }
+
+    private boolean hasValidatedInternet(
+            NetworkCapabilities capabilities
+    ) {
+        return capabilities != null
+                && capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_INTERNET
+                )
+                && capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                );
+    }
+
+    private void updateConnectivityState(boolean available) {
+        boolean connectionRestored =
+                available && !hasValidatedInternet;
+
+        hasValidatedInternet = available;
+
+        if (connectionRestored) {
+            retryFailedPage();
+        }
+    }
+
+    private void retryFailedPage() {
+        if (webView == null || failedMainFrameUrl == null) {
+            return;
+        }
+
+        String retryUrl = failedMainFrameUrl;
+
+        if (!isAgoreUrl(retryUrl)) {
+            failedMainFrameUrl = null;
+            return;
+        }
+
+        String currentUrl = webView.getUrl();
+
+        /*
+         * Do not redirect users who have moved to another page since
+         * the original load failed.
+         */
+        if (currentUrl == null || !currentUrl.equals(retryUrl)) {
+            failedMainFrameUrl = null;
+            return;
+        }
+
+        failedMainFrameUrl = null;
+
+        Toast.makeText(
+                this,
+                "Connection restored. Reloading Agoré…",
+                Toast.LENGTH_SHORT
+        ).show();
+
+        webView.reload();
+    }
+
+    private boolean isAgoreUrl(String value) {
+        if (value == null) {
+            return false;
+        }
+
+        Uri uri = Uri.parse(value);
+
+        return "https".equalsIgnoreCase(uri.getScheme())
+                && AGORE_HOST.equalsIgnoreCase(uri.getHost());
     }
 
     private Uri extractOAuthCallback(Intent intent) {
@@ -478,8 +693,6 @@ public class MainActivity extends Activity {
             Intent intent = new Intent(Intent.ACTION_VIEW, uri);
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
 
-            // Avoid resolveActivity(): package visibility restrictions
-            // can make it return null even when a handler is available.
             startActivity(intent);
 
         } catch (
@@ -568,6 +781,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        unregisterConnectivityCallback();
+
         if (fileChooserCallback != null) {
             fileChooserCallback.onReceiveValue(null);
             fileChooserCallback = null;
